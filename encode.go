@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/google/renameio"
+	"path/filepath"
 )
 
 // errorEncoder is a helper type to encode multiple values
@@ -301,13 +300,20 @@ func LoadSavedGraph[K cmp.Ordered](path string) (*SavedGraph[K], error) {
 
 // Save writes the graph to the file.
 func (g *SavedGraph[K]) Save() error {
-	tmp, err := renameio.TempFile("", g.Path)
+	f, err := os.CreateTemp(filepath.Dir(g.Path), ".hnsw-tmp-*")
 	if err != nil {
 		return err
 	}
-	defer tmp.Cleanup()
+	tmpName := f.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			f.Close()
+			os.Remove(tmpName)
+		}
+	}()
 
-	wr := bufio.NewWriter(tmp)
+	wr := bufio.NewWriter(f)
 	err = g.Export(wr)
 	if err != nil {
 		return fmt.Errorf("exporting: %w", err)
@@ -318,9 +324,15 @@ func (g *SavedGraph[K]) Save() error {
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	err = tmp.CloseAtomicallyReplace()
+	err = f.Close()
+	closed = true
 	if err != nil {
-		return fmt.Errorf("closing atomically: %w", err)
+		return fmt.Errorf("closing: %w", err)
+	}
+
+	err = os.Rename(tmpName, g.Path)
+	if err != nil {
+		return fmt.Errorf("renaming: %w", err)
 	}
 
 	return nil

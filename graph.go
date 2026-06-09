@@ -3,13 +3,13 @@ package hnsw
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"slices"
 	"time"
 
 	"github.com/coder/hnsw/heap"
-	"golang.org/x/exp/maps"
 )
 
 type Vector = []float32
@@ -113,8 +113,7 @@ func (n *layerNode[K]) search(
 
 		// We iterate the map in a sorted, deterministic fashion for
 		// tests.
-		neighborKeys := maps.Keys(current.neighbors)
-		slices.Sort(neighborKeys)
+		neighborKeys := slices.Sorted(maps.Keys(current.neighbors))
 		for _, neighborID := range neighborKeys {
 			neighbor := current.neighbors[neighborID]
 			if visited[neighborID] {

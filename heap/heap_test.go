@@ -16,9 +16,10 @@ func (i Int) Less(j Int) bool {
 
 func TestHeap(t *testing.T) {
 	h := Heap[Int]{}
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 20; i++ {
-		h.Push(Int(rand.Int() % 100))
+		h.Push(Int(rng.Int() % 100))
 	}
 
 	require.Equal(t, 20, h.Len())

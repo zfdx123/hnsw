@@ -196,8 +196,9 @@ func Benchmark_HSNW(b *testing.B) {
 
 func randFloats(n int) []float32 {
 	x := make([]float32, n)
+	rng := rand.New(rand.NewSource(0))
 	for i := range x {
-		x[i] = rand.Float32()
+		x[i] = rng.Float32()
 	}
 	return x
 }
