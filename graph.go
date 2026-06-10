@@ -64,7 +64,7 @@ func (n *layerNode[K]) addNeighbor(newNode *layerNode[K], m int, dist DistanceFu
 	delete(n.neighbors, worst.Key)
 	// Delete backlink from the worst neighbor.
 	delete(worst.neighbors, n.Key)
-	worst.replenish(m)
+	worst.replenish(m, dist)
 }
 
 type searchCandidate[K cmp.Ordered] struct {
@@ -76,17 +76,16 @@ func (s searchCandidate[K]) Less(o searchCandidate[K]) bool {
 	return s.dist < o.dist
 }
 
-// search returns the layer node closest to the target node
-// within the same layer.
+// search returns the nearest neighbors of target within this layer.
+// Implements HNSW Algorithm 5 (SEARCH-LAYER): the result set is bounded
+// by efSearch during exploration; only the k closest are returned.
 func (n *layerNode[K]) search(
-	// k is the number of candidates in the result set.
+	// k is the number of nearest neighbors to return.
 	k int,
 	efSearch int,
 	target Vector,
 	distance DistanceFunc,
 ) []searchCandidate[K] {
-	// This is a basic greedy algorithm to find the entry point at the given level
-	// that is closest to the target node.
 	candidates := heap.Heap[searchCandidate[K]]{}
 	candidates.Init(make([]searchCandidate[K], 0, efSearch))
 	candidates.Push(
@@ -99,55 +98,63 @@ func (n *layerNode[K]) search(
 		result  = heap.Heap[searchCandidate[K]]{}
 		visited = make(map[K]bool)
 	)
-	result.Init(make([]searchCandidate[K], 0, k))
+	result.Init(make([]searchCandidate[K], 0, efSearch))
 
 	// Begin with the entry node in the result set.
 	result.Push(candidates.Min())
 	visited[n.Key] = true
 
 	for candidates.Len() > 0 {
-		var (
-			current  = candidates.Pop().node
-			improved = false
-		)
+		current := candidates.Pop()
+
+		// Standard HNSW termination: if the closest remaining candidate
+		// is farther than the worst in the ef-bounded result set,
+		// no further improvement is possible.
+		if result.Len() >= efSearch && current.dist > result.Max().dist {
+			break
+		}
 
 		// We iterate the map in a sorted, deterministic fashion for
 		// tests.
-		neighborKeys := slices.Sorted(maps.Keys(current.neighbors))
+		neighborKeys := slices.Sorted(maps.Keys(current.node.neighbors))
 		for _, neighborID := range neighborKeys {
-			neighbor := current.neighbors[neighborID]
+			neighbor := current.node.neighbors[neighborID]
 			if visited[neighborID] {
 				continue
 			}
 			visited[neighborID] = true
 
 			dist := distance(neighbor.Value, target)
-			improved = improved || dist < result.Min().dist
-			if result.Len() < k {
+			if result.Len() < efSearch {
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
+				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			} else if dist < result.Max().dist {
 				result.PopLast()
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
+				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			}
-
-			candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
-			// Always store candidates if we haven't reached the limit.
-			if candidates.Len() > efSearch {
-				candidates.PopLast()
-			}
-		}
-
-		// Termination condition: no improvement in distance and at least
-		// kMin candidates in the result set.
-		if !improved && result.Len() >= k {
-			break
 		}
 	}
 
-	return result.Slice()
+	// Return only the k closest from the ef-sized result set.
+	res := result.Slice()
+	slices.SortFunc(res, func(a, b searchCandidate[K]) int {
+		if a.dist < b.dist {
+			return -1
+		}
+		if a.dist > b.dist {
+			return 1
+		}
+		// Deterministic tiebreaking by key.
+		return cmp.Compare(a.node.Key, b.node.Key)
+	})
+	if len(res) > k {
+		res = res[:k]
+	}
+	return res
 }
 
-func (n *layerNode[K]) replenish(m int) {
+func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
 	if len(n.neighbors) >= m {
 		return
 	}
@@ -164,7 +171,7 @@ func (n *layerNode[K]) replenish(m int) {
 			if candidate == n {
 				continue
 			}
-			n.addNeighbor(candidate, m, CosineDistance)
+			n.addNeighbor(candidate, m, dist)
 			if len(n.neighbors) >= m {
 				return
 			}
@@ -174,13 +181,13 @@ func (n *layerNode[K]) replenish(m int) {
 
 // isolates remove the node from the graph by removing all connections
 // to neighbors.
-func (n *layerNode[K]) isolate(m int) {
+func (n *layerNode[K]) isolate(m int, dist DistanceFunc) {
 	for _, neighbor := range n.neighbors {
 		delete(neighbor.neighbors, n.Key)
 	}
 
 	for _, neighbor := range n.neighbors {
-		neighbor.replenish(m)
+		neighbor.replenish(m, dist)
 	}
 }
 
@@ -500,7 +507,7 @@ func (h *Graph[K]) Delete(key K) bool {
 		if len(layer.nodes) == 0 {
 			deleteLayer[i] = struct{}{}
 		}
-		node.isolate(h.M)
+		node.isolate(h.M, h.Distance)
 		deleted = true
 	}
 
